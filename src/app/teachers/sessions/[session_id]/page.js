@@ -3,35 +3,76 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import { createClientSupabaseClient } from '@/lib/supabase/client';
 
 async function fetchSessionDetails(session_id) {
-  // بيانات تجريبية (ستستبدل باتصال حقيقي بالسيرفر)
-  // TODO: استبدل هذا باستدعاء حقيقي من Supabase لجلب بيانات الجلسة والمرفقات
+  const supabase = createClientSupabaseClient();
+
+  // 1. جلب تفاصيل الجلسة
+  const { data: session, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, title, description, start_time, end_time, notes, course_id, courses(id, title)')
+    .eq('id', session_id)
+    .single();
+
+  if (sessionError || !session) return null;
+
+  // 2. جلب الطلاب المسجلين في الكورس
+  const { data: enrollments } = await supabase
+    .from('enrollments')
+    .select('student_id, users(id, full_name)')
+    .eq('course_id', session.course_id);
+
+  // 3. جلب سجلات الحضور
+  const { data: attendanceRecords } = await supabase
+    .from('session_attendances')
+    .select('student_id, attendance_status, notes')
+    .eq('session_id', session_id);
+
+  // 4. جلب الواجبات المرتبطة
+  const { data: assignments } = await supabase
+    .from('assignments')
+    .select('id, title, description, due_date, type, max_score')
+    .eq('session_id', session_id);
+
+  // 5. جلب الأنشطة (لو عندك جدول activities في قاعدة البيانات، عدل هنا)
+  const activities = [];
+
+  // 6. جلب المرفقات المرتبطة بهذه الجلسة من جدول session_attachments
+  const { data: attachments, error: attachmentsError } = await supabase
+    .from('session_attachments')
+    .select('*')
+    .eq('session_id', session_id);
+
+  if (attachmentsError) {
+    console.error('تعذر جلب المرفقات:', attachmentsError.message);
+  }
+
+  // تجهيز بيانات الحضور
+  const attendance = (enrollments || []).map((enroll) => {
+    const record = (attendanceRecords || []).find((a) => a.student_id === enroll.student_id);
+    return {
+      id: enroll.student_id,
+      name: enroll.users?.full_name || 'طالب',
+      status: record?.attendance_status || 'حاضر',
+      grade: 0,
+      interaction: 0,
+      note: record?.notes || '',
+    };
+  });
+
   return {
-    id: session_id,
-    title: 'Unit 1 Lesson 4',
-    description: 'the world around us',
-    course: { id: 'course1', name: 'Hello Plus' },
-    start_time: '2025-08-17T01:21:00Z',
-    end_time: '2025-08-29T22:29:00Z',
-    notes: 'come come',
-    attachments: [
-      { name: 'ورقة عمل.pdf', url: '#' },
-      { name: 'فيديو شرح.mp4', url: '#' },
-    ],
-    attendance: [
-      { id: 'stu1', name: 'أحمد محمد', status: 'حاضر', grade: 9, interaction: 4, note: 'ممتاز' },
-      { id: 'stu2', name: 'سارة علي', status: 'غائب', grade: 0, interaction: 0, note: '' },
-      { id: 'stu3', name: 'محمد سمير', status: 'متأخر', grade: 7, interaction: 3, note: 'تأخر 10 دقائق' },
-    ],
-    assignments: [
-      { id: 1, title: 'واجب القراءة', status: 'تم التسليم', link: '#' },
-      { id: 2, title: 'اختبار قصير', status: 'لم يُسلّم', link: '#' },
-    ],
-    activities: [
-      { time: '01:30', text: 'مناقشة حول البيئة' },
-      { time: '02:00', text: 'نشاط جماعي: رسم خريطة' },
-    ],
+    id: session.id,
+    title: session.title,
+    description: session.description,
+    course: { id: session.courses?.id, name: session.courses?.title },
+    start_time: session.start_time,
+    end_time: session.end_time,
+    notes: session.notes,
+    attachments: attachments || [],
+    attendance,
+    assignments: assignments || [],
+    activities,
   };
 }
 
