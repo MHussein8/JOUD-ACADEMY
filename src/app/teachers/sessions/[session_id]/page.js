@@ -7,20 +7,33 @@ import { useParams } from 'next/navigation';
 // استيراد عميل supabase
 import { createBrowserClient } from '@supabase/ssr';
 
+// تهيئة عميل Supabase
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
+import { createClientSupabaseClient } from '@/lib/supabase/client';
+
+/**
+ * دالة لجلب جميع تفاصيل الجلسة من قاعدة البيانات
+ * @param {string} session_id - معرف الجلسة
+ * @returns {Promise<object|null>} بيانات الجلسة كاملة أو null في حالة وجود خطأ
+ */
 async function fetchSessionDetails(session_id) {
-  // 1. جلب تفاصيل الجلسة
+  const supabase = createClientSupabaseClient();
+
+  // 1. جلب تفاصيل الجلسة الأساسية
   const { data: session, error: sessionError } = await supabase
     .from('sessions')
     .select('id, title, description, start_time, end_time, notes, course_id, courses(id, title)')
     .eq('id', session_id)
     .single();
 
-  if (sessionError || !session) return null;
+  if (sessionError || !session) {
+    console.error('Session details not found:', sessionError?.message);
+    return null;
+  }
 
   // 2. جلب الطلاب المسجلين في الكورس
   const { data: enrollments } = await supabase
@@ -40,13 +53,32 @@ async function fetchSessionDetails(session_id) {
     .select('id, title, description, due_date, type, max_score')
     .eq('session_id', session_id);
 
-  // 5. جلب الأنشطة (لو عندك جدول activities في قاعدة البيانات، عدل هنا)
-  // حالياً هنخليها فاضية أو بيانات تجريبية لو مش موجودة
+  // 5. جلب الأنشطة (في هذا المثال، الأنشطة فارغة)
   const activities = [];
 
-  // 6. جلب المرفقات (لو عندك جدول attachments في قاعدة البيانات، عدل هنا)
-  // حالياً هنخليها فاضية أو بيانات تجريبية لو مش موجودة
-  const attachments = [];
+  // 6. جلب المرفقات المرتبطة بهذه الجلسة من جدول session_attachments
+  // وتأكد من أننا نستخدم الـ session_id للتصفية، هذا هو التصحيح الرئيسي
+  const { data: attachments, error: attachmentsError } = await supabase
+    .from('session_attachments')
+    .select('title, url')
+    .eq('session_id', session_id); // هنا تم إضافة الشرط الأساسي
+
+  if (attachmentsError) {
+    console.error('تعذر جلب المرفقات:', attachmentsError.message);
+  }
+
+  // هنا يتم إنشاء الرابط العام للملفات باستخدام Supabase Storage
+  const attachmentsWithPublicUrls = (attachments || []).map((attachment) => {
+    const { data: publicUrlData } = supabase
+      .storage
+      .from('session-attachments') // اسم الـ bucket الذي يحتوي على المرفقات
+      .getPublicUrl(attachment.url);
+
+    return {
+      title: attachment.title,
+      url: publicUrlData.publicUrl // الآن لدينا رابط عام صحيح للعرض
+    };
+  });
 
   // تجهيز بيانات الحضور
   const attendance = (enrollments || []).map((enroll) => {
@@ -69,7 +101,7 @@ async function fetchSessionDetails(session_id) {
     start_time: session.start_time,
     end_time: session.end_time,
     notes: session.notes,
-    attachments,
+    attachments: attachmentsWithPublicUrls, // نستخدم هنا المرفقات التي تم تحديث روابطها
     attendance,
     assignments: assignments || [],
     activities,
@@ -148,7 +180,7 @@ export default function SessionDetailsPage() {
         ...prevSession,
         attachments: [
           ...prevSession.attachments,
-          { name: newAttachmentName, url: tempUrl }
+          { title: newAttachmentName, url: tempUrl }
         ]
       }));
       setNewAttachmentName('');
@@ -237,7 +269,7 @@ export default function SessionDetailsPage() {
               {session.attachments.map((file, idx) => (
                 <li key={idx}>
                   <a href={file.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline flex items-center gap-2">
-                    <span>📎</span> {file.name}
+                    <span>📎</span> {file.title}
                   </a>
                 </li>
               ))}
@@ -364,7 +396,7 @@ export default function SessionDetailsPage() {
                       onChange={(e) => handleInteractionChange(student.id, e.target.value)}
                     />
                   </td>
-                                  
+                                          
                   {/* الملاحظات */}
                   <td className="py-2 px-3 text-center">
                     <input
